@@ -86,6 +86,7 @@ public class MainActivityFragment extends Fragment {
 
                 Uri imageUri = Uri.parse("http://image.tmdb.org/t/p/w780/" +
                         mMovieAdapter.getItem(position).poster_path);
+
                 String originalTitle = mMovieAdapter.getItem(position).original_title;
                 String overview = mMovieAdapter.getItem(position).overview;
                 String voteAverage = mMovieAdapter.getItem(position).vote_average;
