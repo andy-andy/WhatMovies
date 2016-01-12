@@ -1,8 +1,21 @@
+buildscript {
+    repositories {
+        maven {
+            url "https://plugins.gradle.org/m2/"
+        }
+    }
+    dependencies {
+        classpath "com.trello:victor:0.1.5"
+    }
+}
+
+
 apply plugin: 'com.android.application'
+apply plugin: 'com.trello.victor'
 
 android {
     compileSdkVersion 23
-    buildToolsVersion "23.0.1"
+    buildToolsVersion "23.0.2"
 
     defaultConfig {
         applicationId "com.tarapus.whatmovies"
@@ -12,22 +25,39 @@ android {
         versionName "1.0"
     }
     buildTypes {
+        debug {
+            debuggable true
+            minifyEnabled false
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }
+    sourceSets {
+        main {
+            svg.srcDir 'src/main/svg'
+        }
+    }
 }
 
-repositories {
-    mavenCentral()
+victor {
+    svgDpi = 72
+    excludeDensities = ['ldpi']
 }
 
 dependencies {
     compile fileTree(dir: 'libs', include: ['*.jar'])
     testCompile 'junit:junit:4.12'
-    compile 'com.android.support:appcompat-v7:23.0.1'
-    compile 'com.android.support:design:23.0.1'
+    compile 'com.android.support:appcompat-v7:23.1.1'
+    compile 'com.android.support:design:23.1.1'
     compile 'com.squareup.picasso:picasso:2.5.2'
     compile 'com.google.code.gson:gson:2.2.4'
+    compile 'com.android.support:support-v4:23.1.1'
+
+    compile 'com.github.bumptech.glide:glide:3.6.0'
+
+    compile 'com.squareup.retrofit:retrofit:1.9.0'
+    compile 'com.jakewharton:butterknife:6.1.0'
+    compile 'com.github.provigen:ProviGen-lib:2.0.1'
 }

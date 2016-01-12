@@ -9,11 +9,11 @@
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@style/AppTheme">
+        android:theme="@style/MovieTheme">
         <activity
             android:name=".activities.MainActivity"
-            android:label="@string/app_name"
-            android:theme="@style/AppTheme.NoActionBar">
+            android:label="@string/app_name">
+
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
@@ -22,10 +22,13 @@
         </activity>
         <activity
             android:name=".activities.DetailActivity"
-            android:label="@string/title_activity_detail"
-            android:parentActivityName=".activities.MainActivity"
-            android:theme="@style/AppTheme.NoActionBar">
-        </activity>
+            android:label="@string/movie_details"
+            android:parentActivityName=".activities.MainActivity"></activity>
+
+        <provider
+            android:name="com.tarapus.whatmovies.provider.MovieProvider"
+            android:authorities="com.tarapus.whatmovies"
+            android:exported="false" />
     </application>
 
 </manifest>

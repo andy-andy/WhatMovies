@@ -1,238 +1,521 @@
 package com.tarapus.whatmovies.fragments;
 
-import android.app.Fragment;
-import android.content.Intent;
-import android.net.Uri;
-import android.os.AsyncTask;
+import android.app.Activity;
+import android.content.Context;
+import android.content.SharedPreferences;
+import android.content.res.Configuration;
+import android.graphics.drawable.Drawable;
+import android.os.Build;
 import android.os.Bundle;
+import android.preference.PreferenceManager;
+import android.support.annotation.Nullable;
+import android.support.v4.app.Fragment;
+import android.support.v4.app.LoaderManager;
+import android.support.v4.content.ContextCompat;
+import android.support.v4.content.Loader;
+import android.support.v7.widget.GridLayoutManager;
+import android.support.v7.widget.RecyclerView;
 import android.util.Log;
 import android.view.LayoutInflater;
-import android.view.Menu;
-import android.view.MenuInflater;
-import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.AdapterView;
-import android.widget.GridView;
+import android.widget.Button;
+import android.widget.ImageView;
+import android.widget.ProgressBar;
+import android.widget.TextView;
 
-import com.google.gson.Gson;
-import com.tarapus.whatmovies.Adapters.MovieAdapter;
+import com.bumptech.glide.Glide;
 import com.tarapus.whatmovies.R;
-import com.tarapus.whatmovies.activities.DetailActivity;
-import com.tarapus.whatmovies.network.Movie;
-import com.tarapus.whatmovies.network.MovieData;
+import com.tarapus.whatmovies.adapters.MovieListLoader;
+import com.tarapus.whatmovies.adapters.MovieStoreAsyncTask;
+import com.tarapus.whatmovies.network.MovieResponse;
+import com.tarapus.whatmovies.network.RetrofitAdapter;
+import com.tarapus.whatmovies.network.TmdbService;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.net.HttpURLConnection;
-import java.net.MalformedURLException;
-import java.net.URL;
+import java.util.ArrayList;
+import java.util.StringTokenizer;
 
-public class MainActivityFragment extends Fragment {
+import butterknife.ButterKnife;
+import butterknife.InjectView;
+import retrofit.Callback;
+import retrofit.RestAdapter;
+import retrofit.RetrofitError;
+import retrofit.client.Response;
 
-    private MovieAdapter mMovieAdapter;
-    private URL mUrl = null;
+public class MainActivityFragment extends Fragment
+        implements LoaderManager.LoaderCallbacks<ArrayList<MovieResponse.Movie>> {
 
-    @Override
-    public void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        setHasOptionsMenu(true);
+    private final static String IS_DUAL_PANE = "is_dual_pane";
+
+    private final static String ARG_ITEMS = "items";
+
+    private final static String ARG_SELECTED_ITEM = "selected_item";
+
+    private final static String ARG_SORT_ORDER = "sort_order";
+
+    private final static String ARG_VIEW_STATE = "view_state";
+
+    private final static int VIEW_STATE_LOADING = 0;
+
+    private final static int VIEW_STATE_ERROR = 1;
+
+    private final static int VIEW_STATE_EMPTY = 2;
+
+    private final static int VIEW_STATE_RESULTS = 3;
+
+    private final static int LOADER_ID = 1;
+
+    @InjectView(R.id.empty_text_view)
+    TextView mEmptyTextView;
+
+    @InjectView(R.id.error_text_view)
+    TextView mErrorTextView;
+
+    @InjectView(R.id.retry_button)
+    Button mRetryButton;
+
+    @InjectView(R.id.progress_bar)
+    ProgressBar mProgressBar;
+
+    @InjectView(R.id.recycler_view)
+    RecyclerView mRecyclerView;
+
+    private MoviesAdapter mAdapter;
+
+    private String mSortOrder;
+
+    private ListActionListener mActionListener;
+
+    private boolean isDualPane;
+
+    public static MainActivityFragment getInstance(boolean isDualPane) {
+        MainActivityFragment fragment = new MainActivityFragment();
+        Bundle args = new Bundle();
+        args.putBoolean(IS_DUAL_PANE, isDualPane);
+        fragment.setArguments(args);
+        return fragment;
     }
 
     @Override
-    public void onStart() {
-        super.onStart();
-        updateMovie();
-    }
-
-    @Override
-    public void onCreateOptionsMenu(Menu menu, MenuInflater inflater) {
-        inflater.inflate(R.menu.menu_fragment_main, menu);
-        super.onCreateOptionsMenu(menu, inflater);
-    }
-
-    @Override
-    public boolean onOptionsItemSelected(MenuItem item) {
-        switch (item.getItemId()) {
-            case R.id.action_sort_by_most_popular:
-                updateMovie();
-                return true;
-
-            case R.id.action_sort_by_vote_average:
-                updateMovieSort();
-                return true;
+    public void onAttach(Activity activity) {
+        super.onAttach(activity);
+        try {
+            mActionListener = (ListActionListener) activity;
+        } catch (ClassCastException e) {
+            Log.e(this.getClass().getName(),
+                    "Activity must implement " + ListActionListener.class.getName());
         }
-        return super.onOptionsItemSelected(item);
     }
 
+    @Override
+    public void onResume() {
+        super.onResume();
+        loadFavorites();
+        if (!isDualPane && mSortOrder.equals(getString(R.string.sort_order_favorites))
+                && mAdapter.getItemCount() > 0) {
+            // update favorites list
+            populateData();
+        }
+    }
+
+    @Override
+    public void onCreate(@Nullable Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        isDualPane = getArguments().getBoolean(IS_DUAL_PANE, false);
+    }
+
+    @Nullable
     @Override
     public View onCreateView(LayoutInflater inflater, ViewGroup container,
                              Bundle savedInstanceState) {
+        View v = inflater.inflate(R.layout.fragment_movie_list, container, false);
+        ButterKnife.inject(this, v);
 
-        View rootView = inflater.inflate(R.layout.fragment_main, container, false);
-
-        //Adapter
-        mMovieAdapter = new MovieAdapter(getActivity(), new Movie[]{});
-
-        GridView gridView = (GridView) rootView.findViewById(R.id.grid_view_movies);
-        gridView.setAdapter(mMovieAdapter);
-
-        //On Click listener Detailed movie view
-        gridView.setOnItemClickListener(new AdapterView.OnItemClickListener() {
+        mRetryButton.setOnClickListener(new View.OnClickListener() {
             @Override
-            public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
-
-                Uri imageUri = Uri.parse("http://image.tmdb.org/t/p/w780/" +
-                        mMovieAdapter.getItem(position).poster_path);
-
-                String originalTitle = mMovieAdapter.getItem(position).original_title;
-                String overview = mMovieAdapter.getItem(position).overview;
-                String voteAverage = mMovieAdapter.getItem(position).vote_average;
-                //Release Date. Substring: First 4 characters
-                String releaseDate = mMovieAdapter.getItem(position).release_date;
-                String releaseDateSub = releaseDate.substring(0, 4);
-
-                Intent intent = new Intent(getActivity(), DetailActivity.class);
-                intent.putExtra("image_uri", imageUri);
-                intent.putExtra("original_title", originalTitle);
-                intent.putExtra("overview", overview);
-                intent.putExtra("vote_average", voteAverage);
-                intent.putExtra("release_date", releaseDateSub);
-                startActivity(intent);
+            public void onClick(View view) {
+                reload();
             }
         });
-
-        return rootView;
-    }
-
-    //URL builder method
-    public void buildMovieUrl(String sort, String page) {
-        //Contain API key
-        String api_key = "API key here!!!";
-        //Sort by popularity.desc by default Most popular
-        //Sort by vote_average
-        final String MOVIES_BASE_URL = "http://api.themoviedb.org/3/discover/movie?";
-        final String API_KEY = "api_key";
-        final String SORT_BY = "sort_by";
-        final String PAGE = "page";
-
-        Uri buildUri = Uri.parse(MOVIES_BASE_URL).buildUpon()
-                .appendQueryParameter(PAGE, page)
-                .appendQueryParameter(SORT_BY, sort)
-                .appendQueryParameter(API_KEY, api_key)
-                .build();
-
-        try {
-            mUrl = new URL(buildUri.toString());
-        } catch (MalformedURLException e) {
-            e.printStackTrace();
-        }
-        FetchMovieTask movieTask = new FetchMovieTask(new Movie[]{});
-        movieTask.execute();
-    }
-
-    public void updateMovie() {
-        String page = "1";
-        String sort = "popularity.desc";
-        buildMovieUrl(sort, page);
-    }
-
-    public void updateMovieSort() {
-        String page = "1";
-        String sort = "vote_average.desc";
-        buildMovieUrl(sort, page);
-    }
-
-    public class FetchMovieTask extends AsyncTask<URL, Void, Movie[]> {
-
-        private final String LOG_TAG = FetchMovieTask.class.getSimpleName();
-        private Movie[] movies;
-
-        public FetchMovieTask(Movie[] movies) {
-            this.movies = movies;
-        }
-
-        @Override
-        protected Movie[] doInBackground(URL... urls) {
-            // These two need to be declared outside the try/catch
-            // so that they can be closed in the finally block.
-            HttpURLConnection urlConnection = null;
-            BufferedReader reader = null;
-
-            // Will contain the raw JSON response as a string.
-            String movieJsonStr;
-
-            try {
-                Log.v(LOG_TAG, "Built URI " + mUrl.toString());
-
-                // Create the request to Movies web, and open the connection
-                urlConnection = (HttpURLConnection) mUrl.openConnection();
-                urlConnection.setRequestMethod("GET");
-                urlConnection.connect();
-
-                // Read the input stream into a String
-                InputStream inputStream = urlConnection.getInputStream();
-
-                StringBuffer buffer = new StringBuffer();
-
-                if (inputStream == null) {
-                    // Nothing to do.
-                    return null;
-                }
-
-                reader = new BufferedReader(new InputStreamReader(inputStream));
-
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    // Since it's JSON, adding a newline isn't necessary (it won't affect parsing)
-                    // But it does make debugging a *lot* easier if you print out the completed
-                    // buffer for debugging.
-                    buffer.append(line + "\n");
-                }
-
-                if (buffer.length() == 0) {
-                    // Stream was empty.  No point in parsing.
-                    return null;
-                }
-                movieJsonStr = buffer.toString();
-                Log.v(LOG_TAG, "Movie JSON String" + movieJsonStr);
-
-                Gson gson = new Gson();
-                MovieData movieData = gson.fromJson(movieJsonStr, MovieData.class);
-                movies = movieData.results;
-
-            } catch (
-                    IOException e
-                    ) {
-                Log.e(LOG_TAG, "Error ", e);
-                // If the code didn't successfully get the weather data, there's no point in attemping
-                // to parse it.
-                return null;
-            } finally
-
-            {
-                if (urlConnection != null) {
-                    urlConnection.disconnect();
-                }
-                if (reader != null) {
-                    try {
-                        reader.close();
-                    } catch (final IOException e) {
-                        Log.e(LOG_TAG, "Error closing stream", e);
+        mRecyclerView.setLayoutManager(new GridLayoutManager(getActivity(), getSpanCount()));
+        mAdapter = new MoviesAdapter(getActivity(), isDualPane, mActionListener);
+        mRecyclerView.setAdapter(mAdapter);
+        mSortOrder = getSortParam();
+        if (savedInstanceState == null) {
+            populateData();
+        } else {
+            mSortOrder = savedInstanceState.getString(ARG_SORT_ORDER);
+            if (mSortOrder != null && !mSortOrder.equalsIgnoreCase(getSortParam())) {
+                populateData();
+            }
+            int state = savedInstanceState.getInt(ARG_VIEW_STATE, VIEW_STATE_ERROR);
+            switch (state) {
+                case VIEW_STATE_ERROR:
+                    showErrorViews();
+                    break;
+                case VIEW_STATE_RESULTS:
+                    int selectedPosition = savedInstanceState.getInt(ARG_SELECTED_ITEM, 0);
+                    ArrayList<MovieResponse.Movie> items = savedInstanceState.getParcelableArrayList(ARG_ITEMS);
+                    mAdapter.mSelectedPosition = selectedPosition;
+                    mAdapter.setItems(items);
+                    showResultViews();
+                    if (isDualPane) {
+                        mRecyclerView.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                mRecyclerView.scrollToPosition(mAdapter.mSelectedPosition);
+                            }
+                        });
                     }
-                }
+                    break;
+                case VIEW_STATE_EMPTY:
+                    showEmptyViews();
+                    break;
+                default:
+                    showLoadingViews();
+                    break;
+            }
+        }
+        return v;
+    }
+
+    @Override
+    public void onSaveInstanceState(Bundle outState) {
+        int state = VIEW_STATE_RESULTS;
+        if (mProgressBar.getVisibility() == View.VISIBLE) {
+            state = VIEW_STATE_LOADING;
+        } else if (mErrorTextView.getVisibility() == View.VISIBLE) {
+            state = VIEW_STATE_ERROR;
+        } else if (mEmptyTextView.getVisibility() == View.VISIBLE) {
+            state = VIEW_STATE_EMPTY;
+        }
+        outState.putInt(ARG_VIEW_STATE, state);
+        outState.putParcelableArrayList(ARG_ITEMS, mAdapter.getItems());
+        outState.putInt(ARG_SELECTED_ITEM, mAdapter.mSelectedPosition);
+        outState.putString(ARG_SORT_ORDER, mSortOrder);
+        super.onSaveInstanceState(outState);
+    }
+
+    /**
+     * Changes sort order, stores selected param to SharedPreferences, reloads fragment data.
+     *
+     * @param sortOrder sortBy param
+     */
+    public void setSortOrder(String sortOrder) {
+        mSortOrder = sortOrder;
+        mAdapter.mSelectedPosition = 0;
+        populateData();
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(getActivity());
+        SharedPreferences.Editor editor = prefs.edit();
+        editor.putString(getString(R.string.prefs_sort_order), mSortOrder);
+        editor.apply();
+    }
+
+    public void setDualPane(boolean dualPane) {
+        isDualPane = dualPane;
+    }
+
+    public void favoriteListChanged(long movieId) {
+        loadFavorites();
+        if (mSortOrder.equals(getString(R.string.sort_order_favorites))) {
+            // TODO: remove/insert by one item
+            populateData();
+        }
+    }
+
+    /**
+     * Returns favorites list.
+     */
+    private ArrayList<Long> loadFavorites() {
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(getActivity());
+        String favoritesString = prefs.getString(getString(R.string.prefs_favorites), "");
+        ArrayList<Long> list = new ArrayList<>();
+        if (favoritesString.length() > 0) {
+            StringTokenizer st = new StringTokenizer(favoritesString, ",");
+            while (st.hasMoreTokens()) {
+                list.add(Long.parseLong(st.nextToken()));
+            }
+        }
+        if (mAdapter != null) {
+            mAdapter.setFavorites(list);
+        }
+        return list;
+    }
+
+    /**
+     * Loads data from server or from db.
+     */
+    private void populateData() {
+        // load from db or from server
+        if (mSortOrder.equals(getString(R.string.sort_order_favorites))) {
+            showLoadingViews();
+            getActivity().getSupportLoaderManager().restartLoader(LOADER_ID, null, this);
+        } else {
+            getActivity().getSupportLoaderManager().destroyLoader(LOADER_ID);
+            loadFavorites();
+            loadData();
+        }
+    }
+
+    /**
+     * Loads movie list.
+     */
+    private void loadData() {
+        showLoadingViews();
+        RestAdapter adapter = RetrofitAdapter.getRestAdapter();
+        TmdbService service = adapter.create(TmdbService.class);
+        service.getMovieList(mSortOrder, new Callback<MovieResponse>() {
+            @Override
+            public void success(MovieResponse movieResponse, Response response) {
+                showResultViews();
+                mAdapter.setItems(movieResponse.results);
+                mRecyclerView.scrollToPosition(0);
+                storeMovies(movieResponse.results);
             }
 
-            return movies;
+            @Override
+            public void failure(RetrofitError error) {
+                showErrorViews();
+            }
+        });
+    }
+
+    /**
+     * Retries to reload movie list from server.
+     */
+    private void reload() {
+        loadData();
+    }
+
+    /**
+     * Returns default (popularity) or set by user sortBy param.
+     *
+     * @return sortBy param
+     */
+    private String getSortParam() {
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(getActivity());
+        String defaultValue = getString(R.string.sort_order_popularity);
+        return prefs.getString(getString(R.string.prefs_sort_order), defaultValue);
+    }
+
+    /**
+     * Calculates grid span count
+     */
+    private int getSpanCount() {
+        int orientation = getResources().getConfiguration().orientation;
+        int sw = getResources().getConfiguration().smallestScreenWidthDp;
+        boolean landscape = (orientation == Configuration.ORIENTATION_LANDSCAPE);
+        if (sw < 600) {
+            return (landscape) ? 4 : 2;
+        } else if (sw < 720) {
+            return (landscape) ? 2 : 3;
+        } else {
+            return (landscape) ? 3 : 2;
+        }
+    }
+
+    /**
+     * Helper method to hide all elements, except progress bar.
+     */
+    private void showLoadingViews() {
+        mProgressBar.setVisibility(View.VISIBLE);
+        mErrorTextView.setVisibility(View.GONE);
+        mRetryButton.setVisibility(View.GONE);
+        mRecyclerView.setVisibility(View.GONE);
+        mEmptyTextView.setVisibility(View.GONE);
+        mActionListener.onEmptyMovieList();
+    }
+
+    /**
+     * Helper method to hide all elements, except error views.
+     */
+    private void showErrorViews() {
+        mErrorTextView.setVisibility(View.VISIBLE);
+        mRetryButton.setVisibility(View.VISIBLE);
+        mProgressBar.setVisibility(View.GONE);
+        mRecyclerView.setVisibility(View.GONE);
+        mEmptyTextView.setVisibility(View.GONE);
+        mActionListener.onEmptyMovieList();
+    }
+
+    /**
+     * Helper method to hide all elements, except empty view.
+     */
+    private void showEmptyViews() {
+        mEmptyTextView.setVisibility(View.VISIBLE);
+        mRecyclerView.setVisibility(View.GONE);
+        mProgressBar.setVisibility(View.GONE);
+        mErrorTextView.setVisibility(View.GONE);
+        mRetryButton.setVisibility(View.GONE);
+        mActionListener.onEmptyMovieList();
+    }
+
+
+    /**
+     * Helper method to hide all elements, except recycler view.
+     */
+    private void showResultViews() {
+        mRecyclerView.setVisibility(View.VISIBLE);
+        mProgressBar.setVisibility(View.GONE);
+        mErrorTextView.setVisibility(View.GONE);
+        mRetryButton.setVisibility(View.GONE);
+        mEmptyTextView.setVisibility(View.GONE);
+    }
+
+    @SuppressWarnings("unchecked")
+    /** Stores movie list to db. */
+    private void storeMovies(ArrayList<MovieResponse.Movie> movieList) {
+        new MovieStoreAsyncTask(getActivity()).execute(movieList);
+    }
+
+    /**
+     * Loader callbacks
+     */
+    @Override
+    public Loader<ArrayList<MovieResponse.Movie>> onCreateLoader(int id, Bundle args) {
+        return new MovieListLoader(getActivity(), loadFavorites());
+    }
+
+    @Override
+    public void onLoadFinished(Loader<ArrayList<MovieResponse.Movie>> loader, ArrayList<MovieResponse.Movie> data) {
+        if (data == null) {
+            showErrorViews();
+        } else if (data.size() > 0) {
+            mAdapter.setItems(data);
+            mRecyclerView.scrollToPosition(0);
+            showResultViews();
+        } else {
+            showEmptyViews();
+        }
+    }
+
+    @Override
+    public void onLoaderReset(Loader<ArrayList<MovieResponse.Movie>> loader) {
+
+    }
+
+    /**
+     * Movie list action listener
+     */
+    public interface ListActionListener {
+
+        void onMovieSelected(MovieResponse.Movie movie, boolean isFavorite);
+
+        void onEmptyMovieList();
+    }
+
+    /**
+     * Movies RecyclerView adapter class.
+     */
+    private static class MoviesAdapter extends RecyclerView.Adapter<MovieViewHolder> {
+
+        final private Context mContext;
+
+        final private ListActionListener mActionListener;
+
+        final private boolean isDualPane;
+
+        private ArrayList<MovieResponse.Movie> mItems;
+
+        private ArrayList<Long> mFavorites;
+
+        // keep track of selected item
+        private int mSelectedPosition;
+
+        public MoviesAdapter(Context context, boolean dualPane, ListActionListener listener) {
+            mContext = context;
+            isDualPane = dualPane;
+            mActionListener = listener;
+            mItems = new ArrayList<>();
+        }
+
+        @SuppressWarnings("deprecation")
+        @Override
+        public MovieViewHolder onCreateViewHolder(ViewGroup parent, int viewType) {
+            LayoutInflater inflater = LayoutInflater.from(parent.getContext());
+            View v = inflater.inflate(R.layout.movie_item, parent, false);
+            MovieViewHolder holder = new MovieViewHolder(v);
+            if (isDualPane) {
+                Drawable drawable = ContextCompat.getDrawable(mContext, R.drawable.movie_placeholder);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
+                    holder.itemView.setBackground(drawable);
+                } else {
+                    holder.itemView.setBackgroundDrawable(drawable);
+                }
+            }
+            return holder;
         }
 
         @Override
-        protected void onPostExecute(Movie[] movies) {
-            if (movies != null) {
-                mMovieAdapter.addMovies(movies);
+        public void onBindViewHolder(MovieViewHolder holder, final int position) {
+            Glide.with(mContext)
+                    .load(mItems.get(position).getPosterUrl())
+                    .centerCrop()
+                    .placeholder(R.drawable.movie_placeholder)
+                    .crossFade()
+                    .into(holder.mPosterView);
+            holder.mPosterView.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View view) {
+                    selectItem(position);
+                }
+            });
+            if (isDualPane) {
+                holder.itemView.setSelected(mSelectedPosition == position);
             }
+        }
+
+        @Override
+        public int getItemCount() {
+            return mItems.size();
+        }
+
+        @Override
+        public long getItemId(int position) {
+            return mItems.get(position).id;
+        }
+
+        public void setFavorites(ArrayList<Long> favorites) {
+            mFavorites = favorites;
+        }
+
+        public ArrayList<MovieResponse.Movie> getItems() {
+            return mItems;
+        }
+
+        public void setItems(ArrayList<MovieResponse.Movie> items) {
+            mItems = items;
+            notifyDataSetChanged();
+            if (isDualPane) {
+                int position = (mSelectedPosition < mItems.size()) ? mSelectedPosition
+                        : mItems.size() - 1;
+                selectItem(position);
+            }
+        }
+
+        private void selectItem(int position) {
+            int prevPosition = mSelectedPosition;
+            mSelectedPosition = position;
+            notifyItemChanged(position);
+            notifyItemChanged(prevPosition);
+            MovieResponse.Movie movie = mItems.get(position);
+            boolean isFavorite = (mFavorites != null && mFavorites.contains(movie.id));
+            mActionListener.onMovieSelected(movie, isFavorite);
+        }
+    }
+
+    /**
+     * Movie view holder class.
+     */
+    static class MovieViewHolder extends RecyclerView.ViewHolder {
+
+        @InjectView(R.id.poster_image_view)
+        public ImageView mPosterView;
+
+        public MovieViewHolder(View itemView) {
+            super(itemView);
+            ButterKnife.inject(this, itemView);
+            itemView.setClickable(true);
         }
     }
 }
