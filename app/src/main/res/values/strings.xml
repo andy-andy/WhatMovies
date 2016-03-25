@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">What Movies</string>
+    <string name="app_name">Pick a Movie</string>
     <string name="action_sort_order">Sort Order</string>
     <string name="loading_error">Sorry. Unable to load resource.</string>
     <string name="retry">Please try again</string>
